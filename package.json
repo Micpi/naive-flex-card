@@ -1,6 +1,6 @@
 {
   "name": "naive-flex-card",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Universal Home Assistant card with coherent sliders, configurable French labels, and quick actions",
   "scripts": {

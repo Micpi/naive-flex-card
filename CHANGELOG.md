@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.1 - 2026-07-20
+
+- fix(card): keep main control buttons on one row on mobile
+
 ## v0.3.0 - 2026-07-20
 
 - feat(card): add Light Slider style unified controls for light, volume, and cover sliders

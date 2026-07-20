@@ -1351,6 +1351,7 @@ class NaiveFlexCard extends LitElement {
       }
 
       .chip {
+        min-width: 0;
         min-height: 36px;
         border-radius: 10px;
         border: 1px solid rgba(255, 255, 255, 0.12);
@@ -1358,6 +1359,10 @@ class NaiveFlexCard extends LitElement {
         color: var(--text-color);
         font-size: 0.8rem;
         font-weight: 600;
+        overflow: hidden;
+        padding: 0 8px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
         cursor: pointer;
         transition:
           background 150ms ease,
@@ -1596,7 +1601,18 @@ class NaiveFlexCard extends LitElement {
 
       @media (max-width: 600px) {
         .control-grid {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 6px;
+        }
+
+        .control-grid.single {
+          grid-template-columns: 1fr;
+        }
+
+        .chip {
+          font-size: 0.72rem;
+          min-height: 34px;
+          padding: 0 5px;
         }
 
         .badge {
@@ -2971,7 +2987,7 @@ window.customCards.push({
 })
 
 console.info(
-  "%c NAIVE-FLEX-CARD %c v0.3.0 ",
+  "%c NAIVE-FLEX-CARD %c v0.3.1 ",
   "color: #fff; background: #00aeef; font-weight: bold; padding: 2px 6px; border-radius: 4px 0 0 4px;",
   "color: #00aeef; background: #111827; font-weight: bold; padding: 2px 6px; border-radius: 0 4px 4px 0;"
 )
