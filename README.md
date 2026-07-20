@@ -1,12 +1,18 @@
-# Naive Flex Card
+<div align="center">
 
-[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-Lovelace-41BDF5?style=for-the-badge&logo=home-assistant&logoColor=white)](https://www.home-assistant.io/)
-[![HACS](https://img.shields.io/badge/HACS-Custom%20Card-41BDF5?style=for-the-badge)](https://hacs.xyz)
-[![Version](https://img.shields.io/badge/Version-v0.1.1-0EA5E9?style=for-the-badge)](https://github.com/Micpi/naive-flex-card)
-[![Type](https://img.shields.io/badge/Type-Universal%20Control%20Card-0284C7?style=for-the-badge)](https://github.com/Micpi/naive-flex-card)
+# 🧱 Naive Flex Card — Home Assistant Card
+
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge)](https://hacs.xyz)
+[![HA Version](https://img.shields.io/badge/Home%20Assistant-2024.1%2B-blue?style=for-the-badge&logo=home-assistant)](https://www.home-assistant.io)
+[![License](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](LICENSE)
+[![Version](https://img.shields.io/github/v/release/Micpi/naive-flex-card?style=for-the-badge&label=Version)](https://github.com/Micpi/naive-flex-card/releases/latest)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Support-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=000000)](https://buymeacoffee.com/mickaelpila)
 
-Custom card Home Assistant complete et parametrique, avec support natif des usages suivants:
+**Carte Lovelace modulaire et paramétrique pour composer des interfaces d'action polyvalentes.**
+
+Configurez visuellement styles, actions et entités pour créer des cartes unifiées et réutilisables.
+
+</div>
 
 ---
 
@@ -19,9 +25,11 @@ Points clefs:
 
 - Configuration simple (presets + options directes)
 - Configuration complete (actions, styles, couleurs, dimensions)
+- Sliders unifies avec rendu type Light Slider Card
+- Textes configurables via `labels` pour eviter les libelles anglais
 - Editeur 100% visuel (aucune saisie JSON obligatoire)
 - Actions natives visuelles: tap, hold, double tap
-- Sections repliables type carte standard (General, Actions, Style, etc.)
+- Sections repliables type carte standard (General, Actions, Styles, Defaults)
 - Pickers visuels pour entites, couleurs et icones
 - Groupes de boutons activables/desactivables, au choix
 - Preset visuel navbar_popup inspire du look navbar/media
@@ -29,11 +37,11 @@ Points clefs:
 - Tailles de boutons minimum, maximum et personnalisee
 - Editeur visuel Lovelace inclus
 
-## Usage recommande
+## 🧪 Usage recommande
 
 Naive Flex Card sert de carte polyvalente de reference quand une seule carte doit combiner un controle principal, des actions rapides et une presentation homogene avec le style Naive Flex du workspace.
 
-## Installation
+## 📦 Installation
 
 1. Copier le dossier `custom_cards/naive-flex-card` dans votre environnement de dev.
 1. Ajouter la ressource Lovelace:
@@ -50,7 +58,7 @@ type: custom:naive-flex-card
 entity: light.salon
 ```
 
-## Configuration rapide
+## ⚙️ Configuration rapide
 
 ```yaml
 type: custom:naive-flex-card
@@ -64,7 +72,7 @@ button_row:
   min_button_width: 72
   max_button_width: 132
   buttons:
-    - label: Off
+    - label: Éteint
       icon: mdi:power
       action: call-service
       service: light.turn_off
@@ -74,9 +82,14 @@ button_row:
       service: light.turn_on
       service_data:
         brightness_pct: 50
+labels:
+  toggle: Basculer
+  brightness: Luminosité
+  on: Allumé
+  off: Éteint
 ```
 
-## Exemple cover
+## 🧪 Exemple cover
 
 ```yaml
 type: custom:naive-flex-card
@@ -106,7 +119,7 @@ button_row:
       position: 100
 ```
 
-## Options principales
+## 🧭 Options principales
 
 - `entity`: entite cible
 - `control_type`: `auto | light | button | volume | cover`
@@ -115,11 +128,12 @@ button_row:
 - `style.shape`: `rounded | square | pill`
 - `style.appearance`: `solid | glass | outline`
 - `style.active_color`, `style.background_color`, `style.text_color`
+- `labels.*`: textes visibles de la carte (badges, boutons, etats, sliders)
 - `button_row.enabled`, `button_row.scroll`
 - `button_row.min_button_width`, `button_row.max_button_width`, `button_row.button_width`
 - `button_row.buttons[]`: actions rapides custom (editees visuellement dans l'UI)
 
-## Format button_row.buttons
+## 🧭 Format button_row.buttons
 
 Chaque bouton accepte:
 
@@ -131,11 +145,32 @@ Chaque bouton accepte:
 - `value` (volume, de 0 a 1) pour `set-value`
 - `position` (cover, de 0 a 100) pour `set-value`
 
-## Editeur
+## 🗣️ Textes personnalisables
+
+La carte fournit des libelles francais par defaut. Tous les textes visibles principaux peuvent etre ajustes:
+
+```yaml
+labels:
+  badge_light: Lumière
+  badge_volume: Son
+  toggle: Basculer
+  brightness: Luminosité
+  brightness_down: "- Luminosité"
+  brightness_up: "+ Luminosité"
+  volume: Volume
+  open: Ouvrir
+  stop: Arrêter
+  close: Fermer
+  on: Allumé
+  off: Éteint
+  unavailable: Entité introuvable
+```
+
+## 🛠️ Editeur
 
 La carte embarque un editeur visuel complet et constitue la base ergonomique a reutiliser pour les futures cartes riches du workspace.
 
-## Build local
+## 🧱 Build local
 
 Depuis `custom_cards/naive-flex-card`:
 
