@@ -1,0 +1,58 @@
+# Naive Flex Card — exemples prêts à copier
+
+# 1. Déploiement minimal : le type de contrôle est détecté depuis le domaine cover.
+- type: custom:naive-flex-card
+  entity: cover.volet_salon
+
+# 2. Volet personnalisé avec commandes directionnelles et positions rapides.
+- type: custom:naive-flex-card
+  entity: cover.volet_chambre
+  name: Volet de la chambre
+  style:
+    preset: soft
+    shape: rounded
+    active_color: "#38bdf8"
+  cover_controls:
+    show_open: true
+    show_stop: true
+    show_close: true
+    show_position: true
+    position_step: 5
+    respect_supported_features: true
+  button_row:
+    enabled: true
+    buttons:
+      - label: 25%
+        icon: mdi:window-shutter
+        action: set-position
+        position: 25
+      - label: 50%
+        icon: mdi:window-shutter
+        action: set-position
+        position: 50
+      - label: 75%
+        icon: mdi:window-shutter-open
+        action: set-position
+        position: 75
+
+# 3. Commandes explicites vers plusieurs volets depuis une seule carte.
+- type: custom:naive-flex-card
+  entity: cover.volet_salon
+  button_row:
+    enabled: true
+    scroll: false
+    buttons:
+      - label: Ouvrir cuisine
+        icon: mdi:arrow-up
+        entity: cover.volet_cuisine
+        action: open-cover
+      - label: Fermer cuisine
+        icon: mdi:arrow-down
+        entity: cover.volet_cuisine
+        action: close-cover
+
+# 4. Compatibilité avec une ancienne intégration qui ne renseigne pas supported_features.
+- type: custom:naive-flex-card
+  entity: cover.ancien_volet
+  cover_controls:
+    respect_supported_features: false

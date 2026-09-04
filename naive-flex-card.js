@@ -1,5 +1,14 @@
 import { LitElement, html, css } from "https://unpkg.com/lit-element@2.4.0/lit-element.js?module"
 
+const CARD_VERSION = "0.4.0"
+
+const COVER_FEATURES = {
+  OPEN: 1,
+  CLOSE: 2,
+  SET_POSITION: 4,
+  STOP: 8,
+}
+
 const DEFAULT_CONFIG = {
   control_type: "auto",
   show_name: true,
@@ -38,8 +47,17 @@ const DEFAULT_CONFIG = {
     step: 0.05,
   },
   cover_controls: {
+    show_open: true,
+    show_close: true,
     show_stop: true,
-    step: 10,
+    show_position: true,
+    show_icons: true,
+    position_step: 1,
+    respect_supported_features: true,
+    disable_redundant_commands: true,
+    open_icon: "mdi:arrow-up",
+    stop_icon: "mdi:stop",
+    close_icon: "mdi:arrow-down",
   },
   labels: {
     unavailable: "Entité introuvable",
@@ -116,6 +134,7 @@ class NaiveFlexCard extends LitElement {
     return {
       hass: { type: Object },
       config: { type: Object },
+      _coverCommandPending: { state: true },
     }
   }
 
@@ -560,40 +579,78 @@ class NaiveFlexCard extends LitElement {
     console.info(prefix, message, extra || "")
   }
 
-  async _callService(domain, service, serviceData = {}) {
+  async _callService(domain, service, serviceData = {}, target) {
     try {
-      await this._hass.callService(domain, service, serviceData)
+      await this._hass.callService(domain, service, serviceData, target)
       this._log("info", `Service appelé: ${domain}.${service}`, serviceData)
+      return true
     } catch (error) {
       this._log("error", `Échec appel service: ${domain}.${service}`, error)
+      return false
     }
+  }
+
+  _withEntityTarget(serviceData = {}, entity = this.config?.entity, serviceDomain = "") {
+    const data = { ...(serviceData || {}) }
+    const entityDomain = String(entity || "").split(".")[0]
+    const acceptsEntity = serviceDomain === entityDomain || serviceDomain === "homeassistant"
+    if (entity && acceptsEntity && data.entity_id == null) data.entity_id = entity
+    return data
+  }
+
+  _stopControlEvent(event) {
+    event?.stopPropagation()
   }
 
   async _runAction(actionConfig, fallbackEntity = this.config.entity) {
     if (!actionConfig || actionConfig.action === "none") return
 
     const action = actionConfig.action || "more-info"
+    const actionEntity = actionConfig.entity || fallbackEntity
 
     if (action === "more-info") {
-      this._fireEvent("hass-more-info", { entityId: fallbackEntity })
+      this._fireEvent("hass-more-info", { entityId: actionEntity })
       return
     }
 
     if (action === "toggle") {
-      const domain = (fallbackEntity || "").split(".")[0]
+      const domain = (actionEntity || "").split(".")[0]
       if (!domain) return
-      await this._callService(domain, "toggle", { entity_id: fallbackEntity })
+      await this._callService(domain, "toggle", { entity_id: actionEntity })
       return
     }
 
-    if (action === "call-service") {
-      const service = actionConfig.service || ""
+    const coverServices = {
+      "open-cover": "open_cover",
+      "close-cover": "close_cover",
+      "stop-cover": "stop_cover",
+    }
+    if (coverServices[action]) {
+      await this._callService("cover", coverServices[action], { entity_id: actionEntity })
+      return
+    }
+
+    if (action === "set-position") {
+      const position = this._clamp(Number(actionConfig.position ?? 0), 0, 100)
+      await this._callService("cover", "set_cover_position", {
+        entity_id: actionEntity,
+        position,
+      })
+      return
+    }
+
+    if (action === "call-service" || action === "perform-action") {
+      const service = actionConfig.perform_action || actionConfig.service || ""
       if (!service.includes(".")) {
         this._log("warn", "Service invalide pour call-service", service)
         return
       }
       const [domain, serviceName] = service.split(".")
-      await this._callService(domain, serviceName, actionConfig.service_data || {})
+      const configuredData = actionConfig.data || actionConfig.service_data || {}
+      const serviceData = actionConfig.target
+        ? { ...configuredData }
+        : this._withEntityTarget(configuredData, actionEntity, domain)
+      await this._callService(domain, serviceName, serviceData, actionConfig.target)
       return
     }
 
@@ -699,6 +756,13 @@ class NaiveFlexCard extends LitElement {
     await this._onCardTap()
   }
 
+  async _onHeaderKeyDown(event) {
+    if (!["Enter", " "].includes(event.key)) return
+    event.preventDefault()
+    event.stopPropagation()
+    await this._onCardTap()
+  }
+
   async _toggleMain() {
     await this._runAction({ action: "toggle" }, this.config.entity)
   }
@@ -792,12 +856,42 @@ class NaiveFlexCard extends LitElement {
     })
   }
 
-  async _coverAction(service) {
-    await this._callService("cover", service, { entity_id: this.config.entity })
+  _coverSupports(feature) {
+    if (this.config?.cover_controls?.respect_supported_features === false) return true
+
+    const attributes = this._entity?.attributes || {}
+    if (!Object.prototype.hasOwnProperty.call(attributes, "supported_features")) return true
+
+    const supported = Number(attributes.supported_features)
+    if (!Number.isFinite(supported)) return true
+    return (supported & feature) !== 0
+  }
+
+  _coverCommandDisabled(service) {
+    if (this._coverCommandPending) return true
+    if (this.config?.cover_controls?.disable_redundant_commands === false) return false
+
+    const state = String(this._entity?.state || "").toLowerCase()
+    if (service === "open_cover") return state === "open" || state === "opening"
+    if (service === "close_cover") return state === "closed" || state === "closing"
+    return false
+  }
+
+  async _coverAction(event, service) {
+    this._stopControlEvent(event)
+    if (this._coverCommandPending || this._coverCommandDisabled(service)) return
+
+    this._coverCommandPending = service
+    try {
+      await this._callService("cover", service, { entity_id: this.config.entity })
+    } finally {
+      this._coverCommandPending = ""
+    }
   }
 
   async _setCoverPosition(event) {
-    const position = Number(event.target.value)
+    this._stopControlEvent(event)
+    const position = this._clamp(Number(event.target.value), 0, 100)
     await this._callService("cover", "set_cover_position", {
       entity_id: this.config.entity,
       position,
@@ -821,33 +915,35 @@ class NaiveFlexCard extends LitElement {
 
   async _onExtraButtonTap(button) {
     const entity = button.entity || this.config.entity
+    const action = button.action || "more-info"
 
-    if (button.action === "toggle") {
+    if (action === "toggle") {
       const domain = entity.split(".")[0]
       await this._callService(domain, "toggle", { entity_id: entity })
       return
     }
 
-    if (button.action === "more-info") {
+    if (action === "more-info") {
       this._fireEvent("hass-more-info", { entityId: entity })
       return
     }
 
-    if (button.action === "call-service" && button.service) {
-      const [domain, service] = button.service.split(".")
-      if (!domain || !service) {
-        this._log("warn", "Service invalide pour le bouton", button.service)
-        return
-      }
-
-      await this._callService(domain, service, {
-        ...(button.service_data || {}),
-        ...(button.entity ? { entity_id: button.entity } : {}),
-      })
+    if (
+      [
+        "more-info",
+        "call-service",
+        "perform-action",
+        "open-cover",
+        "close-cover",
+        "stop-cover",
+        "set-position",
+      ].includes(action)
+    ) {
+      await this._runAction({ ...button, action }, entity)
       return
     }
 
-    if (button.action === "set-value") {
+    if (action === "set-value") {
       if (this._controlType === "volume") {
         const next = this._clamp(Number(button.value ?? 0), 0, 1)
         await this._callService("media_player", "volume_set", {
@@ -1002,31 +1098,75 @@ class NaiveFlexCard extends LitElement {
   }
 
   _renderControlCover() {
-    const position = Number(this._entity?.attributes?.current_position ?? 0)
+    const controls = this.config.cover_controls
+    const currentPosition = this._entity?.attributes?.current_position
+    const position = Number(currentPosition ?? 0)
+    const canOpen = controls.show_open !== false && this._coverSupports(COVER_FEATURES.OPEN)
+    const canStop = controls.show_stop !== false && this._coverSupports(COVER_FEATURES.STOP)
+    const canClose = controls.show_close !== false && this._coverSupports(COVER_FEATURES.CLOSE)
+    const canSetPosition =
+      controls.show_position !== false &&
+      currentPosition != null &&
+      this._coverSupports(COVER_FEATURES.SET_POSITION)
+    const commandCount = [canOpen, canStop, canClose].filter(Boolean).length
+    const icon = (name) =>
+      controls.show_icons !== false && controls[name]
+        ? html`<ha-icon icon="${controls[name]}"></ha-icon>`
+        : ""
+
     return html`
-      <div class="control-grid">
-        <button class="chip" @click="${() => this._coverAction("open_cover")}">
-          ${this._label("open")}
-        </button>
-        ${this.config.cover_controls.show_stop
-          ? html`<button class="chip" @click="${() => this._coverAction("stop_cover")}">
-              ${this._label("stop")}
-            </button>`
+      ${commandCount
+        ? html`<div class="control-grid cover-grid" style="--control-count:${commandCount};">
+            ${canOpen
+              ? html`<button
+                  class="chip cover-command ${this._entity?.state === "opening" ? "running" : ""}"
+                  aria-label="${this._label("open")}"
+                  title="cover.open_cover"
+                  ?disabled="${this._coverCommandDisabled("open_cover")}"
+                  @pointerdown="${this._stopControlEvent}"
+                  @click="${(event) => this._coverAction(event, "open_cover")}"
+                >
+                  ${icon("open_icon")}<span>${this._label("open")}</span>
+                </button>`
+              : ""}
+            ${canStop
+              ? html`<button
+                  class="chip cover-command"
+                  aria-label="${this._label("stop")}"
+                  title="cover.stop_cover"
+                  ?disabled="${!!this._coverCommandPending}"
+                  @pointerdown="${this._stopControlEvent}"
+                  @click="${(event) => this._coverAction(event, "stop_cover")}"
+                >
+                  ${icon("stop_icon")}<span>${this._label("stop")}</span>
+                </button>`
+              : ""}
+            ${canClose
+              ? html`<button
+                  class="chip cover-command ${this._entity?.state === "closing" ? "running" : ""}"
+                  aria-label="${this._label("close")}"
+                  title="cover.close_cover"
+                  ?disabled="${this._coverCommandDisabled("close_cover")}"
+                  @pointerdown="${this._stopControlEvent}"
+                  @click="${(event) => this._coverAction(event, "close_cover")}"
+                >
+                  ${icon("close_icon")}<span>${this._label("close")}</span>
+                </button>`
+              : ""}
+          </div>`
           : ""}
-        <button class="chip" @click="${() => this._coverAction("close_cover")}">
-          ${this._label("close")}
-        </button>
-      </div>
-      ${this._renderUnifiedSlider({
-        label: this._label("position"),
-        icon: this._icon,
-        value: position,
-        min: 0,
-        max: 100,
-        step: 1,
-        formatter: (value) => `${Math.round(Number(value))}%`,
-        onChange: this._setCoverPosition,
-      })}
+      ${canSetPosition
+        ? this._renderUnifiedSlider({
+            label: this._label("position"),
+            icon: this._icon,
+            value: position,
+            min: 0,
+            max: 100,
+            step: Number(controls.position_step || 1),
+            formatter: (value) => `${Math.round(Number(value))}%`,
+            onChange: this._setCoverPosition,
+          })
+        : ""}
     `
   }
 
@@ -1098,12 +1238,6 @@ class NaiveFlexCard extends LitElement {
       <ha-card
         class="${this._shapeClass} ${this._sizeClass} ${this._appearanceClass} preset-${this.config
           .style.preset} ${this._isActive ? "active" : ""}"
-        @pointerdown="${this._onPointerDown}"
-        @pointerup="${this._onPointerUp}"
-        @pointerleave="${this._onPointerCancel}"
-        @pointercancel="${this._onPointerCancel}"
-        @click="${this._onCardClick}"
-        @dblclick="${this._onCardDoubleClick}"
         style="
           --accent-color:${this.config.style.active_color};
           --inactive-color:${effectiveInactiveColor};
@@ -1114,8 +1248,26 @@ class NaiveFlexCard extends LitElement {
         "
       >
         <div class="overlay"></div>
-        <div class="content" @click="${(ev) => ev.stopPropagation()}">
-          <div class="header">
+        <div
+          class="content"
+          @pointerdown="${this._stopControlEvent}"
+          @pointerup="${this._stopControlEvent}"
+          @click="${this._stopControlEvent}"
+          @dblclick="${this._stopControlEvent}"
+        >
+          <div
+            class="header"
+            role="button"
+            tabindex="0"
+            aria-label="${this._name} — ${this._stateDisplay}"
+            @pointerdown="${this._onPointerDown}"
+            @pointerup="${this._onPointerUp}"
+            @pointerleave="${this._onPointerCancel}"
+            @pointercancel="${this._onPointerCancel}"
+            @click="${this._onCardClick}"
+            @dblclick="${this._onCardDoubleClick}"
+            @keydown="${this._onHeaderKeyDown}"
+          >
             <div class="identity">
               <ha-icon class="main-icon" icon="${this._icon}"></ha-icon>
               <div class="meta">
@@ -1146,34 +1298,15 @@ class NaiveFlexCard extends LitElement {
     return document.createElement("naive-flex-card-editor")
   }
 
-  static getStubConfig() {
-    return {
-      entity: "light.kitchen",
-      control_type: "auto",
-      button_row: {
-        enabled: true,
-        scroll: true,
-        min_button_width: 72,
-        max_button_width: 132,
-        buttons: [
-          { label: "Éteint", icon: "mdi:power", action: "call-service", service: "light.turn_off" },
-          {
-            label: "50%",
-            icon: "mdi:brightness-6",
-            action: "call-service",
-            service: "light.turn_on",
-            service_data: { brightness_pct: 50 },
-          },
-          {
-            label: "100%",
-            icon: "mdi:brightness-7",
-            action: "call-service",
-            service: "light.turn_on",
-            service_data: { brightness_pct: 100 },
-          },
-        ],
-      },
-    }
+  static getStubConfig(hass, entities = [], entitiesFallback = []) {
+    const supportedDomains = new Set(Object.keys(DOMAIN_TO_CONTROL))
+    const candidates = [...(entities || []), ...(entitiesFallback || [])]
+    const discovered = Object.keys(hass?.states || {})
+    const entity = [...candidates, ...discovered].find((entityId) =>
+      supportedDomains.has(String(entityId).split(".")[0])
+    )
+
+    return { entity: entity || "cover.volet_salon" }
   }
 
   static getGridOptions() {
@@ -1197,7 +1330,7 @@ class NaiveFlexCard extends LitElement {
         background: var(--card-bg);
         color: var(--text-color);
         border: var(--preset-border);
-        cursor: pointer;
+        cursor: default;
         transition:
           transform 180ms ease,
           box-shadow 180ms ease,
@@ -1299,6 +1432,16 @@ class NaiveFlexCard extends LitElement {
         gap: 10px;
       }
 
+      .header {
+        border-radius: 8px;
+        cursor: pointer;
+        outline: none;
+      }
+
+      .header:focus-visible {
+        box-shadow: 0 0 0 2px var(--accent-color);
+      }
+
       .identity {
         display: flex;
         align-items: center;
@@ -1350,6 +1493,10 @@ class NaiveFlexCard extends LitElement {
         grid-template-columns: 1fr;
       }
 
+      .control-grid.cover-grid {
+        grid-template-columns: repeat(var(--control-count, 3), minmax(0, 1fr));
+      }
+
       .chip {
         min-width: 0;
         min-height: 36px;
@@ -1372,6 +1519,29 @@ class NaiveFlexCard extends LitElement {
       .chip:hover {
         border-color: var(--accent-color);
         background: rgba(56, 189, 248, 0.14);
+      }
+
+      .chip:disabled,
+      .extra-button:disabled {
+        cursor: not-allowed;
+        opacity: 0.42;
+      }
+
+      .chip.cover-command {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+      }
+
+      .chip.cover-command ha-icon {
+        flex: 0 0 auto;
+        --mdc-icon-size: 18px;
+      }
+
+      .chip.cover-command.running {
+        border-color: var(--accent-color);
+        background: color-mix(in srgb, var(--accent-color) 24%, transparent);
       }
 
       .chip.primary {
@@ -1628,6 +1798,7 @@ class NaiveFlexCardEditor extends LitElement {
     return {
       hass: { type: Object },
       config: { type: Object },
+      _quickProfile: { type: String, attribute: false },
     }
   }
 
@@ -1667,10 +1838,110 @@ class NaiveFlexCardEditor extends LitElement {
     if (!Array.isArray(this.config.button_row.groups)) {
       this.config.button_row.groups = []
     }
+
+    if (!this._quickProfile) {
+      this._quickProfile = this._suggestedQuickProfile(config?.entity)
+    }
   }
 
   _emit(config) {
-    this.dispatchEvent(new CustomEvent("config-changed", { detail: { config } }))
+    const compactConfig = this._compactConfig(config)
+    this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: compactConfig } }))
+  }
+
+  _compactConfig(config) {
+    const compactValue = (value, defaultValue) => {
+      if (Array.isArray(value)) {
+        if (Array.isArray(defaultValue) && value.length === 0 && defaultValue.length === 0) {
+          return undefined
+        }
+        return structuredClone(value)
+      }
+
+      if (value && typeof value === "object") {
+        const result = {}
+        const defaultObject =
+          defaultValue && typeof defaultValue === "object" && !Array.isArray(defaultValue)
+            ? defaultValue
+            : {}
+        Object.entries(value).forEach(([key, childValue]) => {
+          const compactChild = compactValue(childValue, defaultObject[key])
+          if (compactChild !== undefined) result[key] = compactChild
+        })
+        return Object.keys(result).length ? result : undefined
+      }
+
+      return value === defaultValue ? undefined : value
+    }
+
+    const compact = compactValue(config, DEFAULT_CONFIG) || {}
+    if (config.type) compact.type = config.type
+    if (config.entity) compact.entity = config.entity
+    return compact
+  }
+
+  _suggestedQuickProfile(entity) {
+    const domain = String(entity || "").split(".")[0]
+    if (domain === "cover") return "cover-essential"
+    if (domain === "light") return "light"
+    if (domain === "media_player") return "volume"
+    return "auto"
+  }
+
+  _applyQuickProfile() {
+    const profile = this._quickProfile || "auto"
+    const updated = structuredClone(this.config)
+
+    if (profile === "auto") {
+      updated.control_type = "auto"
+      delete updated.tap_action
+      updated.button_row = { ...updated.button_row, enabled: false, buttons: [], groups: [] }
+    }
+
+    if (profile === "cover-essential" || profile === "cover-positions") {
+      updated.control_type = "cover"
+      updated.tap_action = { action: "more-info" }
+      updated.cover_controls = {
+        ...DEFAULT_CONFIG.cover_controls,
+        ...(updated.cover_controls || {}),
+        show_open: true,
+        show_close: true,
+        show_stop: true,
+        show_position: true,
+        respect_supported_features: true,
+        disable_redundant_commands: true,
+      }
+      updated.button_row = {
+        ...updated.button_row,
+        enabled: profile === "cover-positions",
+        buttons:
+          profile === "cover-positions"
+            ? [25, 50, 75].map((position) => ({
+                label: `${position}%`,
+                icon: "mdi:window-shutter",
+                action: "set-position",
+                position,
+                enabled: true,
+              }))
+            : [],
+        groups: [],
+      }
+    }
+
+    if (profile === "light") {
+      updated.control_type = "light"
+      updated.light_controls = { ...DEFAULT_CONFIG.light_controls }
+      updated.button_row = { ...updated.button_row, enabled: false, buttons: [], groups: [] }
+    }
+
+    if (profile === "volume") {
+      updated.control_type = "volume"
+      updated.volume_controls = { ...DEFAULT_CONFIG.volume_controls }
+      updated.button_row = { ...updated.button_row, enabled: false, buttons: [], groups: [] }
+    }
+
+    this.config = updated
+    this._emit(updated)
   }
 
   _setValue(path, value) {
@@ -1720,6 +1991,11 @@ class NaiveFlexCardEditor extends LitElement {
 
   _onBoolean(path, event) {
     this._setValue(path, event.target.checked)
+  }
+
+  _onEntityChanged(entity) {
+    this._quickProfile = this._suggestedQuickProfile(entity)
+    this._setValue("entity", entity)
   }
 
   _toHexColor(value, fallback = "#00aeef") {
@@ -1831,6 +2107,7 @@ class NaiveFlexCardEditor extends LitElement {
     this._setValue(actionKey, {
       ...current,
       action: actionType,
+      ...(actionType === "set-position" && current.position == null ? { position: 50 } : {}),
     })
   }
 
@@ -1946,10 +2223,32 @@ class NaiveFlexCardEditor extends LitElement {
           <option value="none">Aucune</option>
           <option value="more-info">Plus d'informations</option>
           <option value="toggle">Basculer</option>
+          <option value="open-cover">Volet : ouvrir uniquement</option>
+          <option value="stop-cover">Volet : arrêter</option>
+          <option value="close-cover">Volet : fermer uniquement</option>
+          <option value="set-position">Volet : définir la position</option>
           <option value="call-service">Appeler un service</option>
           <option value="navigate">Naviguer</option>
           <option value="url">Ouvrir une URL</option>
         </select>
+
+        ${actionType === "set-position"
+          ? html`
+              <label>Position du volet (0 fermé, 100 ouvert)</label>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                .value="${String(action.position ?? 50)}"
+                @input="${(event) =>
+                  this._setActionField(
+                    actionKey,
+                    "position",
+                    Math.max(0, Math.min(100, Number(event.target.value) || 0))
+                  )}"
+              />
+            `
+          : ""}
 
         ${actionType === "call-service"
           ? html`
@@ -2030,10 +2329,40 @@ class NaiveFlexCardEditor extends LitElement {
     buttons.push({
       label: `Action ${buttons.length + 1}`,
       icon: "mdi:flash",
-      action: "toggle",
+      action: "more-info",
       enabled: true,
     })
     this._setButtons(buttons)
+  }
+
+  _addCoverCommandButtons() {
+    const buttons = [
+      ...this._buttons(),
+      { label: this._labelValue("open"), icon: "mdi:arrow-up", action: "open-cover", enabled: true },
+      { label: this._labelValue("stop"), icon: "mdi:stop", action: "stop-cover", enabled: true },
+      { label: this._labelValue("close"), icon: "mdi:arrow-down", action: "close-cover", enabled: true },
+    ]
+    const updated = structuredClone(this.config)
+    updated.button_row = { ...updated.button_row, enabled: true, buttons }
+    this.config = updated
+    this._emit(updated)
+  }
+
+  _addCoverPositionButtons() {
+    const buttons = [
+      ...this._buttons(),
+      ...[25, 50, 75].map((position) => ({
+        label: `${position}%`,
+        icon: "mdi:window-shutter",
+        action: "set-position",
+        position,
+        enabled: true,
+      })),
+    ]
+    const updated = structuredClone(this.config)
+    updated.button_row = { ...updated.button_row, enabled: true, buttons }
+    this.config = updated
+    this._emit(updated)
   }
 
   _addGroup() {
@@ -2130,6 +2459,17 @@ class NaiveFlexCardEditor extends LitElement {
     this._setButtons(buttons)
   }
 
+  _setButtonAction(index, action) {
+    const button = this._buttons()[index] || {}
+    const defaults = {
+      "open-cover": { label: this._labelValue("open"), icon: "mdi:arrow-up" },
+      "stop-cover": { label: this._labelValue("stop"), icon: "mdi:stop" },
+      "close-cover": { label: this._labelValue("close"), icon: "mdi:arrow-down" },
+      "set-position": { position: button.position ?? 50, icon: "mdi:window-shutter" },
+    }
+    this._updateButton(index, { action, ...(defaults[action] || {}) })
+  }
+
   _serviceDataEntries(button) {
     return Object.entries(button?.service_data || {})
   }
@@ -2213,7 +2553,7 @@ class NaiveFlexCardEditor extends LitElement {
   }
 
   _renderButtonEditor(button, index, total) {
-    const action = button.action || "toggle"
+    const action = button.action || "more-info"
 
     return html`
       <div class="button-editor">
@@ -2280,12 +2620,16 @@ class NaiveFlexCardEditor extends LitElement {
             <label>Action</label>
             <select
               .value="${action}"
-              @change="${(event) => this._setButtonField(index, "action", event.target.value)}"
+              @change="${(event) => this._setButtonAction(index, event.target.value)}"
             >
               <option value="toggle">Basculer</option>
               <option value="more-info">Plus d'informations</option>
+              <option value="open-cover">Volet : ouvrir uniquement</option>
+              <option value="stop-cover">Volet : arrêter</option>
+              <option value="close-cover">Volet : fermer uniquement</option>
+              <option value="set-position">Volet : définir la position</option>
               <option value="call-service">Appeler un service</option>
-              <option value="set-value">Définir une valeur</option>
+              <option value="set-value">Définir une valeur (ancien format)</option>
             </select>
           </div>
           <div>
@@ -2311,6 +2655,25 @@ class NaiveFlexCardEditor extends LitElement {
                 />
               </div>
               ${this._renderServiceDataEditor(button, index)}
+            `
+          : ""}
+        ${action === "set-position"
+          ? html`
+              <div>
+                <label>Position volet (0 fermé, 100 ouvert)</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  .value="${button.position == null ? "50" : String(button.position)}"
+                  @input="${(event) =>
+                    this._setButtonField(
+                      index,
+                      "position",
+                      Math.max(0, Math.min(100, Number(event.target.value) || 0))
+                    )}"
+                />
+              </div>
             `
           : ""}
         ${action === "set-value"
@@ -2475,6 +2838,31 @@ class NaiveFlexCardEditor extends LitElement {
 
     return html`
       <div class="form">
+        <details open class="quick-setup">
+          <summary>Déploiement rapide</summary>
+          <div class="section-content">
+            <div class="hint">
+              Choisissez un profil prêt à l'emploi. L'entité, le nom et votre thème sont conservés.
+            </div>
+            <div class="quick-profile-row">
+              <select
+                aria-label="Profil de déploiement"
+                .value="${this._quickProfile || "auto"}"
+                @change="${(event) => (this._quickProfile = event.target.value)}"
+              >
+                <option value="auto">Automatique essentiel</option>
+                <option value="cover-essential">Volet — commandes essentielles</option>
+                <option value="cover-positions">Volet — commandes + positions</option>
+                <option value="light">Lumière</option>
+                <option value="volume">Lecteur multimédia / volume</option>
+              </select>
+              <button class="small-btn primary" @click="${this._applyQuickProfile}">
+                Appliquer
+              </button>
+            </div>
+          </div>
+        </details>
+
         <details open>
           <summary>Général</summary>
           <div class="section-content">
@@ -2483,7 +2871,7 @@ class NaiveFlexCardEditor extends LitElement {
               .value="${this.config.entity || ""}"
               label="Entité"
               allow-custom-entity
-              @value-changed="${(event) => this._setValue("entity", event.detail.value)}"
+              @value-changed="${(event) => this._onEntityChanged(event.detail.value)}"
             ></ha-entity-picker>
 
             <label>Type de contrôle</label>
@@ -2648,14 +3036,95 @@ class NaiveFlexCardEditor extends LitElement {
               @input="${(event) => this._onNumber("volume_controls.step", event)}"
             />
 
-            <label>
-              <input
-                type="checkbox"
-                .checked="${!!this.config.cover_controls.show_stop}"
-                @change="${(event) => this._onBoolean("cover_controls.show_stop", event)}"
-              />
-              Volet : afficher le bouton arrêter
-            </label>
+            <h3>Volet roulant</h3>
+            <div class="grid-2">
+              <label>
+                <input
+                  type="checkbox"
+                  .checked="${this.config.cover_controls.show_open !== false}"
+                  @change="${(event) => this._onBoolean("cover_controls.show_open", event)}"
+                />
+                Afficher Ouvrir
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  .checked="${this.config.cover_controls.show_close !== false}"
+                  @change="${(event) => this._onBoolean("cover_controls.show_close", event)}"
+                />
+                Afficher Fermer
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  .checked="${this.config.cover_controls.show_stop !== false}"
+                  @change="${(event) => this._onBoolean("cover_controls.show_stop", event)}"
+                />
+                Afficher Arrêter
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  .checked="${this.config.cover_controls.show_position !== false}"
+                  @change="${(event) => this._onBoolean("cover_controls.show_position", event)}"
+                />
+                Afficher la position
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  .checked="${this.config.cover_controls.show_icons !== false}"
+                  @change="${(event) => this._onBoolean("cover_controls.show_icons", event)}"
+                />
+                Afficher les icônes
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  .checked="${this.config.cover_controls.respect_supported_features !== false}"
+                  @change="${(event) =>
+                    this._onBoolean("cover_controls.respect_supported_features", event)}"
+                />
+                Respecter les capacités de l'entité
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  .checked="${this.config.cover_controls.disable_redundant_commands !== false}"
+                  @change="${(event) =>
+                    this._onBoolean("cover_controls.disable_redundant_commands", event)}"
+                />
+                Désactiver la commande déjà atteinte
+              </label>
+              <div>
+                <label>Pas de position (%)</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  .value="${String(this.config.cover_controls.position_step || 1)}"
+                  @input="${(event) => this._onNumber("cover_controls.position_step", event)}"
+                />
+              </div>
+            </div>
+
+            <div class="grid-3-icons">
+              ${this._renderIconField(
+                "Icône ouvrir",
+                this.config.cover_controls.open_icon,
+                (value) => this._setValue("cover_controls.open_icon", value)
+              )}
+              ${this._renderIconField(
+                "Icône arrêter",
+                this.config.cover_controls.stop_icon,
+                (value) => this._setValue("cover_controls.stop_icon", value)
+              )}
+              ${this._renderIconField(
+                "Icône fermer",
+                this.config.cover_controls.close_icon,
+                (value) => this._setValue("cover_controls.close_icon", value)
+              )}
+            </div>
           </div>
         </details>
 
@@ -2773,7 +3242,15 @@ class NaiveFlexCardEditor extends LitElement {
 
             <div class="button-list-header">
               <h3>Boutons</h3>
-              <button class="small-btn" @click="${this._addButton}">+ Ajouter un bouton</button>
+              <div class="button-editor-actions">
+                <button class="small-btn" @click="${this._addCoverCommandButtons}">
+                  + Ouvrir / Stop / Fermer
+                </button>
+                <button class="small-btn" @click="${this._addCoverPositionButtons}">
+                  + Positions 25 / 50 / 75%
+                </button>
+                <button class="small-btn" @click="${this._addButton}">+ Bouton libre</button>
+              </div>
             </div>
             ${buttons.length
               ? buttons.map((button, index) =>
@@ -2827,6 +3304,16 @@ class NaiveFlexCardEditor extends LitElement {
         display: grid;
         gap: 10px;
         padding: 12px;
+      }
+
+      .quick-setup {
+        border-color: color-mix(in srgb, var(--primary-color, #03a9f4) 55%, transparent);
+      }
+
+      .quick-profile-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
       }
 
       .icon-field,
@@ -2891,7 +3378,8 @@ class NaiveFlexCardEditor extends LitElement {
       }
 
       .grid-2,
-      .grid-3 {
+      .grid-3,
+      .grid-3-icons {
         display: grid;
         gap: 8px;
       }
@@ -2902,6 +3390,10 @@ class NaiveFlexCardEditor extends LitElement {
 
       .grid-3 {
         grid-template-columns: 1fr 1fr auto;
+      }
+
+      .grid-3-icons {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
       }
 
       .button-list-header,
@@ -2915,6 +3407,7 @@ class NaiveFlexCardEditor extends LitElement {
 
       .button-editor-actions {
         display: flex;
+        flex-wrap: wrap;
         gap: 6px;
       }
 
@@ -2949,6 +3442,12 @@ class NaiveFlexCardEditor extends LitElement {
         color: #fecaca;
       }
 
+      .small-btn.primary {
+        border-color: var(--primary-color, #03a9f4);
+        color: var(--primary-text-color, #f9fafb);
+        background: color-mix(in srgb, var(--primary-color, #03a9f4) 25%, transparent);
+      }
+
       .small-btn:disabled {
         opacity: 0.45;
         cursor: not-allowed;
@@ -2966,7 +3465,9 @@ class NaiveFlexCardEditor extends LitElement {
 
       @media (max-width: 720px) {
         .grid-2,
-        .grid-3 {
+        .grid-3,
+        .grid-3-icons,
+        .quick-profile-row {
           grid-template-columns: 1fr;
         }
       }
@@ -2982,12 +3483,13 @@ window.customCards.push({
   type: "naive-flex-card",
   name: "Naive Flex Card",
   description:
-    "Carte universelle configurable pour lumière, bouton, volume et volet avec styles et boutons rapides.",
+    "Carte universelle configurable avec commandes de volets explicites et profils de déploiement rapide.",
+  documentationURL: "https://github.com/Micpi/naive-flex-card",
   preview: true,
 })
 
 console.info(
-  "%c NAIVE-FLEX-CARD %c v0.3.1 ",
+  `%c NAIVE-FLEX-CARD %c v${CARD_VERSION} `,
   "color: #fff; background: #00aeef; font-weight: bold; padding: 2px 6px; border-radius: 4px 0 0 4px;",
   "color: #00aeef; background: #111827; font-weight: bold; padding: 2px 6px; border-radius: 0 4px 4px 0;"
 )
