@@ -1,6 +1,6 @@
 import { LitElement, html, css } from "https://unpkg.com/lit-element@2.4.0/lit-element.js?module"
 
-const CARD_VERSION = "0.4.0"
+const CARD_VERSION = "0.4.1"
 
 const COVER_FEATURES = {
   OPEN: 1,
@@ -872,8 +872,20 @@ class NaiveFlexCard extends LitElement {
     if (this.config?.cover_controls?.disable_redundant_commands === false) return false
 
     const state = String(this._entity?.state || "").toLowerCase()
-    if (service === "open_cover") return state === "open" || state === "opening"
-    if (service === "close_cover") return state === "closed" || state === "closing"
+    const rawPosition = this._entity?.attributes?.current_position
+    const position = rawPosition == null ? null : Number(rawPosition)
+    const hasPosition = Number.isFinite(position)
+
+    if (service === "open_cover") {
+      if (state === "opening") return true
+      return hasPosition ? position >= 100 : state === "open"
+    }
+
+    if (service === "close_cover") {
+      if (state === "closing") return true
+      return hasPosition ? position <= 0 : state === "closed"
+    }
+
     return false
   }
 

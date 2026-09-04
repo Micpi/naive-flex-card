@@ -189,7 +189,7 @@ button_row:
 - `cover_controls.show_open`, `show_stop`, `show_close`, `show_position`, `show_icons`
 - `cover_controls.position_step`: pas du slider, de 1 à 100
 - `cover_controls.respect_supported_features`: masque les fonctions non supportées
-- `cover_controls.disable_redundant_commands`: désactive Ouvrir si le volet est déjà ouvert, et inversement
+- `cover_controls.disable_redundant_commands`: désactive Ouvrir uniquement à 100 % et Fermer uniquement à 0 % ; les deux directions restent disponibles après un arrêt intermédiaire
 - `cover_controls.open_icon`, `stop_icon`, `close_icon`
 - `button_row.enabled`, `button_row.scroll`
 - `button_row.min_button_width`, `button_row.max_button_width`, `button_row.button_width`

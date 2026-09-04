@@ -73,6 +73,7 @@ test("les commandes principales ouvrent et ferment sans jamais basculer", async 
 
   await card._coverAction({ stopPropagation: () => (propagationStopped = true) }, "open_cover")
   card.hass.states["cover.salon"].state = "open"
+  card.hass.states["cover.salon"].attributes.current_position = 100
   await card._coverAction({ stopPropagation() {} }, "close_cover")
 
   assert.equal(propagationStopped, true)
@@ -171,6 +172,34 @@ test("les capacités supported_features pilotent les contrôles disponibles", as
   assert.equal(card._coverSupports(COVER_FEATURES.CLOSE), true)
   assert.equal(card._coverSupports(COVER_FEATURES.STOP), false)
   assert.equal(card._coverSupports(COVER_FEATURES.SET_POSITION), false)
+})
+
+test("un volet KNX arrêté à une position partielle peut continuer à s'ouvrir", async () => {
+  const { NaiveFlexCard } = await loadCardClasses()
+  const { card, calls } = createCoverCard(NaiveFlexCard, "open")
+  card.hass.states["cover.salon"].attributes.current_position = 15
+
+  assert.equal(card._coverCommandDisabled("open_cover"), false)
+  assert.equal(card._coverCommandDisabled("close_cover"), false)
+
+  await card._coverAction({ stopPropagation() {} }, "open_cover")
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].service, "open_cover")
+})
+
+test("les commandes redondantes ne sont désactivées qu'aux positions extrêmes", async () => {
+  const { NaiveFlexCard } = await loadCardClasses()
+  const { card } = createCoverCard(NaiveFlexCard, "open")
+
+  card.hass.states["cover.salon"].attributes.current_position = 100
+  assert.equal(card._coverCommandDisabled("open_cover"), true)
+  assert.equal(card._coverCommandDisabled("close_cover"), false)
+
+  card.hass.states["cover.salon"].state = "closed"
+  card.hass.states["cover.salon"].attributes.current_position = 0
+  assert.equal(card._coverCommandDisabled("open_cover"), false)
+  assert.equal(card._coverCommandDisabled("close_cover"), true)
 })
 
 test("l'éditeur émet une configuration compacte", async () => {
